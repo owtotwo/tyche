@@ -1,6 +1,6 @@
 # Tyche (tyche)
 
-A Quasar Framework app
+A verifiable random number generator powered by distributed randomness beacon.
 
 ## Install the dependencies
 ```bash
