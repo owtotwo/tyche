@@ -650,6 +650,7 @@ export default {
       console.log('test');
       console.log(this.redeemCode);
       console.log(this.extractRedeemCode('asdgasgjwqeogqj'));
+      console.log(this.$route.params.redeem);
     },
   },
   beforeDestroy() {
