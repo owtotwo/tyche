@@ -16,10 +16,10 @@
         <q-input
           v-model.lazy="round"
           class="text-h6"
-          :label="'Round (latest: ' + lastedRound + ')'"
+          :label="'Round (latest: ' + latestRound + ')'"
           type="number"
           v-on:change="updateRandomness"
-          :title="roundToDatetime(this.round)"
+          :title="drand.roundToDatetime(this.round)"
         />
       </div>
       <q-btn
@@ -34,12 +34,14 @@
     <q-card id="hex-value">
       <q-card-section>
         <template
-          v-if="typeof(hexadecimalRandomness) === 'string' && hexadecimalRandomness.length === 128"
+          v-if="typeof(hexadecimalRandomness) === 'string' && hexadecimalRandomness.length === 64"
         >
           <div class="text-h6 text-weight-bolder">{{ hexadecimalRandomness.slice(0, 32) }}</div>
           <div class="text-h6 text-weight-bolder">{{ hexadecimalRandomness.slice(32, 64) }}</div>
-          <div class="text-h6 text-weight-bolder">{{ hexadecimalRandomness.slice(64, 96) }}</div>
+          <!--
+            <div class="text-h6 text-weight-bolder">{{ hexadecimalRandomness.slice(64, 96) }}</div>
           <div class="text-h6 text-weight-bolder">{{ hexadecimalRandomness.slice(96, 128) }}</div>
+          -->
         </template>
         <template v-else>
           <p>Unknown</p>
@@ -76,7 +78,8 @@
     </div>
     <q-card id="randomness" v-if="randomnessResult.randomnessList.length > 0">
       <q-card-actions align="around">
-        <q-btn flat @click="setBackRound" :title="roundToDatetime(this.randomnessResult.round)">
+        <q-btn flat @click="setBackRound"
+          :title="drand.roundToDatetime(this.randomnessResult.round)">
           Round: {{ this.randomnessResult.round }}
         </q-btn>
         <q-btn flat @click="setBackMin">Min: {{ this.randomnessResult.min }}</q-btn>
@@ -161,25 +164,26 @@
           <q-item-section>
             <q-input
               v-model="reserveForm.option.datetime"
-              label="Datetime (after 2019-06-28 04:01)"
-              placeholder="yyyy-MM-dd HH:mm"
+              :label="'Datetime (after ' + formatDatetime(drand.baseTime) + ')'"
+              placeholder="yyyy-MM-dd HH:mm:ss"
               counter
-              maxlength="16"
-              mask="####-##-## ##:##"
+              maxlength="19"
+              mask="####-##-## ##:##:##"
               :title="reserveFormDatetimeToRoundTitle(reserveForm.option.datetime)"
               v-on:change="checkValidReserveDatetime"
             >
               <template v-slot:append>
                 <q-icon name="event" class="cursor-pointer">
                   <q-popup-proxy transition-show="scale" transition-hide="scale">
-                    <q-date v-model="reserveForm.option.datetime" mask="YYYY-MM-DD HH:mm" />
+                    <q-date v-model="reserveForm.option.datetime" mask="YYYY-MM-DD HH:mm:ss" />
                   </q-popup-proxy>
                 </q-icon>
                 <q-icon name="access_time" class="cursor-pointer">
                   <q-popup-proxy transition-show="scale" transition-hide="scale">
                     <q-time
                       v-model="reserveForm.option.datetime"
-                      mask="YYYY-MM-DD HH:mm"
+                      with-seconds
+                      mask="YYYY-MM-DD HH:mm:ss"
                       format24h
                     />
                   </q-popup-proxy>
@@ -309,28 +313,121 @@
 <script>
 import { date } from 'quasar';
 import MersenneTwister from 'mersennetwister';
-import drand from '../statics/javascripts/drand.min.js';
+import axios from 'axios';
+// import drand from '../statics/javascripts/drand.min.js';
 
-const identity = {
-  Address: 'drand.cloudflare.com:443',
-  TLS: true,
-};
+// const identity = {
+//   Address: 'drand.cloudflare.com:443',
+//   TLS: true,
+// };
+
+class Drand {
+  constructor(addr = 'drand.cloudflare.com', port = 443) {
+    this.addr = addr;
+    this.port = port;
+    this.baseTime = new Date('2020-07-22T23:17:00');
+  }
+
+  // 通过获取latest得到round与time的对应关系
+  async init() {
+    const response = await axios({
+      method: 'get',
+      url: `https://${this.addr}:${this.port}/public/latest`,
+      responseType: 'json',
+    });
+    if (response.status !== 200) {
+      throw Error('熵联盟服务器没有正确返回请求结果');
+    }
+    const { round } = response.data;
+    const t = new Date();
+    t.setSeconds(t.getSeconds() - round * 30);
+    t.setSeconds(t.getSeconds() - (t.getSeconds() % 30));
+    this.baseTime = t;
+  }
+
+  toString() {
+    return `Drand address: ${this.addr}:${this.port}, baseTime: ${this.baseTime}`;
+  }
+
+  async fetchLatest() {
+    const response = await axios({
+      method: 'get',
+      url: `https://${this.addr}:${this.port}/public/latest`,
+      responseType: 'json',
+    });
+    if (response.status !== 200) {
+      return null;
+    }
+    return response.data;
+  }
+
+  async fetchRound(r) {
+    if (!this.isValidRoundStrict(r)) {
+      return null;
+    }
+    const response = await axios({
+      method: 'get',
+      url: `https://${this.addr}:${this.port}/public/${r}`,
+      responseType: 'json',
+    });
+    if (response.status !== 200) {
+      return null;
+    }
+    const { round, randomness } = response.data;
+    // TODO: 通过签名验证合法性
+    if (round !== r) {
+      return null;
+    }
+    return randomness;
+  }
+
+  getLatestRound() {
+    return this.datetimeToRound(new Date());
+  }
+
+  roundToDatetime(r) {
+    const base = new Date(this.baseTime);
+    base.setSeconds(base.getSeconds() + r * 30);
+    return base;
+  }
+
+  datetimeToRound(dt) {
+    const timeDiff = dt.getTime() - this.baseTime.getTime();
+    const minDiff = Math.floor(timeDiff / (30 * 1000));
+    if (minDiff <= 0) {
+      return null;
+    }
+    return minDiff;
+  }
+
+  static isValidRound(r) {
+    // round可以是未来存在的
+    // fetch round 0 应该是等价于获取 latest
+    return Number.isInteger(r) && r > 0;
+  }
+
+  isValidRoundStrict(r) {
+    // 仅限已有结果的round
+    return Drand.isValidRound(r) && r <= this.getLatestRound();
+  }
+}
+
 
 export default {
   name: 'PageIndex',
   data() {
-    const self = this;
-    const interval = setInterval(() => {
-      self.now = new Date().toISOString();
-      self.lastedRound = self.getLastedRound();
-    }, 1000);
+    // const self = this;
+    // const interval = setInterval(() => {
+    //   // self.now = new Date().toISOString();
+    //   self.latestRound = self.getLatestRound();
+    // }, 1000);
     return {
-      timer: interval,
-      now: undefined,
-      round: this.getLastedRound(),
-      lastedRoundReal: this.getLastedRoundReal(),
-      lastedRound: this.getLastedRound(),
-      hexadecimalRandomness: '0'.repeat(128),
+      drand: new Drand(),
+      timer: null,
+      // now: undefined,
+      round: null,
+      latestRound: null,
+      hexadecimalRandomness: '0'.repeat(64),
       redeemCode: undefined,
       generateOption: {
         amount: 1,
@@ -372,8 +469,28 @@ export default {
       }
     });
   },
-  created() {
-    this.generateRandomness();
+  async created() {
+    await this.drand.init();
+    const self = this;
+    this.timer = setInterval(() => {
+      self.latestRound = self.drand.getLatestRound();
+    }, 1000);
+    const r = this.drand.getLatestRound();
+    this.round = r;
+    this.latestRound = r;
+    const redeemCode = this.$route.params.redeem;
+    if (typeof redeemCode === 'undefined') {
+      await this.generateRandomness();
+    } else {
+      this.submitRedeemCode(redeemCode);
+    }
+    // // 下面是测试代码
+    // const dr = new Drand();
+    // console.log(await dr.init());
+    // console.log(dr.toString());
+    // console.log(await dr.fetchLatest());
+    // console.log(dr.roundToDatetime(15983));
+    // console.log(dr.datetimeToRound(new Date()));
   },
   computed: {},
   watch: {
@@ -386,7 +503,10 @@ export default {
     'reserveForm.option': {
       handler(opt) {
         const dt = this.extractDatetime(opt.datetime);
-        const round = this.datetimeToRound(dt);
+        const round = this.drand.datetimeToRound(dt);
+        if (round === null) {
+          return;
+        }
         this.reserveForm.redeemCode = this.generateRedeemCode(
           round, opt.amount, opt.min, opt.max,
         );
@@ -409,33 +529,42 @@ export default {
     },
   },
   methods: {
-    getLastedRound() {
-      return this.getLastedRoundReal() - 1;
-    },
-    getLastedRoundReal() {
-      const now = new Date();
-      const init = new Date('2019-06-28T04:01:00');
-      const timeDiff = now.getTime() - init.getTime();
-      const minDiff = Math.floor(timeDiff / (60 * 1000));
-      return minDiff;
-    },
+    // getLatestRound() {
+    //   return this.getLatestRoundReal() - 1;
+    // },
+    // getLatestRoundReal() {
+    //   const now = new Date();
+    //   const init = new Date('2019-06-28T04:01:00');
+    //   const timeDiff = now.getTime() - init.getTime();
+    //   const minDiff = Math.floor(timeDiff / (60 * 1000));
+    //   return minDiff;
+    // },
     async updateRandomness() {
       console.log('updateRandomness called!');
       this.$q.loadingBar.start();
-      const fulfilled = await drand.fetchRound(identity, this.round);
+      const randomness = await this.drand.fetchRound(this.round);
       this.$q.loadingBar.stop();
-      if ('error' in fulfilled) {
-        console.error(fulfilled.message);
+      if (randomness === null) {
         this.$q.notify({
           type: 'negative',
-          message: fulfilled.message,
+          message: `获取 Round ${this.round} 随机数失败`,
         });
       }
-      const hexString = fulfilled.randomness.point;
-      this.hexadecimalRandomness = hexString;
+      this.hexadecimalRandomness = randomness;
+      // const fulfilled = await drand.fetchRound(identity, this.round);
+      // this.$q.loadingBar.stop();
+      // if ('error' in fulfilled) {
+      //   console.error(fulfilled.message);
+      //   this.$q.notify({
+      //     type: 'negative',
+      //     message: fulfilled.message,
+      //   });
+      // }
+      // const hexString = fulfilled.randomness.point;
+      // this.hexadecimalRandomness = hexString;
     },
     checkValidRound() {
-      const r = Math.min(this.round, this.lastedRound);
+      const r = Math.min(this.round, this.latestRound);
       if (r !== this.round) {
         this.round = r;
       }
@@ -465,7 +594,7 @@ export default {
     },
     checkValidReserveDatetime() {
       const dt = this.extractDatetime(this.reserveForm.option.datetime);
-      if (dt && this.datetimeToRound(dt)) {
+      if (dt && this.drand.datetimeToRound(dt)) {
         return true;
       }
       this.setReserveFormDatetimeToNow();
@@ -476,7 +605,7 @@ export default {
     },
     setBackRound() {
       const r = this.randomnessResult.round;
-      if (r <= this.lastedRound && r >= 1) {
+      if (r <= this.latestRound && r >= 1) {
         this.round = this.randomnessResult.round;
         this.updateRandomness();
       }
@@ -489,22 +618,33 @@ export default {
     },
     async generateRandomness() {
       console.log('generateRandomness called!');
-      const fulfilled = await drand.fetchRound(identity, this.round);
-      if ('error' in fulfilled) {
-        console.error(fulfilled.message);
+      const randomness = await this.drand.fetchRound(this.round);
+      if (randomness === null) {
         this.$q.notify({
           type: 'negative',
-          message: fulfilled.message,
+          message: `获取 Round ${this.round} 随机数失败`,
         });
         return;
       }
-      const hexString = fulfilled.randomness.point;
-      this.round = parseInt(fulfilled.round, 10);
-      this.hexadecimalRandomness = hexString;
+      this.hexadecimalRandomness = randomness;
+
+      // const fulfilled = await drand.fetchRound(identity, this.round);
+      // if ('error' in fulfilled) {
+      //   console.error(fulfilled.message);
+      //   this.$q.notify({
+      //     type: 'negative',
+      //     message: fulfilled.message,
+      //   });
+      //   return;
+      // }
+      // const hexString = fulfilled.randomness.point;
+      // this.round = parseInt(fulfilled.round, 10);
+      // this.hexadecimalRandomness = hexString;
+
       const mt = new MersenneTwister();
       const vec = [];
-      for (let i = 0; i < 16; i += 1) {
-        const hex = this.hexadecimalRandomness.slice(i, i + 8);
+      for (let i = 0; i < 8; i += 1) {
+        const hex = this.hexadecimalRandomness.slice(i * 8, i * 8 + 8); // TODO: 有问题
         vec[i] = parseInt(hex, 16);
       }
       mt.seedArray(vec);
@@ -528,25 +668,25 @@ export default {
         message: 'The generation is successful!',
       });
     },
-    roundToDatetime(r) {
-      const init = new Date('2019-06-28T04:01:00');
-      init.setMinutes(init.getMinutes() + r);
-      return init;
-    },
-    datetimeToRound(dt) {
-      const init = new Date('2019-06-28T04:01:00');
-      const timeDiff = dt.getTime() - init.getTime();
-      const minDiff = Math.floor(timeDiff / (60 * 1000));
-      if (minDiff <= 0) {
-        return null;
-      }
-      return minDiff;
-    },
+    // roundToDatetime(r) {
+    //   const init = new Date('2019-06-28T04:01:00');
+    //   init.setMinutes(init.getMinutes() + r);
+    //   return init;
+    // },
+    // datetimeToRound(dt) {
+    //   const init = new Date('2019-06-28T04:01:00');
+    //   const timeDiff = dt.getTime() - init.getTime();
+    //   const minDiff = Math.floor(timeDiff / (60 * 1000));
+    //   if (minDiff <= 0) {
+    //     return null;
+    //   }
+    //   return minDiff;
+    // },
     formatDatetime(dt) {
-      return date.formatDate(dt, 'YYYY-MM-DD HH:mm');
+      return date.formatDate(dt, 'YYYY-MM-DD HH:mm:ss');
     },
     extractDatetime(dtString) {
-      return date.extractDate(dtString, 'YYYY-MM-DD HH:mm');
+      return date.extractDate(dtString, 'YYYY-MM-DD HH:mm:ss');
     },
     generateRedeemCode(round, amount, min, max) {
       const raw = [round.toString(36), amount.toString(36),
@@ -558,7 +698,13 @@ export default {
       return redeemCode;
     },
     extractRedeemCode(code) {
-      const raw = atob(code);
+      let raw = null;
+      try {
+        raw = atob(code);
+      } catch (e) {
+        console.log('解析redeem code失败');
+        return null;
+      }
       const rawList = raw.trimEnd().split(',');
       if (rawList.length !== 4) {
         return null;
@@ -588,7 +734,7 @@ export default {
       return Number.isInteger(round) && round > 0;
     },
     isValidRoundStrict(round) {
-      return this.isValidRound(round) && round <= this.lastedRound;
+      return this.isValidRound(round) && round <= this.latestRound;
     },
     isValidAmount(amount) {
       return Number.isInteger(amount) && amount > 0 && amount <= 10000;
@@ -600,7 +746,7 @@ export default {
     reserveFormDatetimeToRoundTitle(dtString) {
       const dt = this.extractDatetime(dtString);
       if (dt) {
-        const round = this.datetimeToRound(dt);
+        const round = this.drand.datetimeToRound(dt);
         if (round) {
           return `Round: ${round}`;
         }
@@ -610,16 +756,24 @@ export default {
     submitRedeemCode(code) {
       const result = this.extractRedeemCode(code);
       if (result) {
+        const formatedDatetime = this.formatDatetime(this.drand.roundToDatetime(result.round));
         if (this.isValidRoundStrict(result.round)) {
           this.redeemForm.isValidRedeemCode = true;
           if (!this.isDirtyRedeemCode) {
             this.isDirtyRedeemCode = true;
           }
           this.generateRandomnessByRedeemCode(code);
+        } else if (this.$route.params.redeem === code) { // 通过url进行redeem
+          this.$q.notify({
+            message: `It's not the time. Please open this url after ${formatedDatetime}`,
+            color: 'warning',
+            timeout: 100000,
+          });
         } else {
           this.$q.notify({
-            message: 'It\'s not the time.',
+            message: `It's not the time. Please check this redeem code after ${formatedDatetime}`,
             color: 'warning',
+            timeout: 8000,
           });
         }
       } else {
@@ -645,13 +799,13 @@ export default {
         }
       }
     },
-    test() {
-      // OGR4eiw0LDEwMCw5aXgg -> [8917, 10380, 7550, 5907]
-      console.log('test');
-      console.log(this.redeemCode);
-      console.log(this.extractRedeemCode('asdgasgjwqeogqj'));
-      console.log(this.$route.params.redeem);
-    },
+    // test() {
+    //   // // OGR4eiw0LDEwMCw5aXgg -> [8917, 10380, 7550, 5907]
+    //   // console.log('test');
+    //   // console.log(this.redeemCode);
+    //   // console.log(this.extractRedeemCode('asdgasgjwqeogqj'));
+    //   console.log(this.$route.params.redeem);
+    // },
   },
   beforeDestroy() {
     clearInterval(this.timer);
