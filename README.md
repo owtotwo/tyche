@@ -19,6 +19,11 @@ quasar dev
 quasar build
 ```
 
+### Deploy to Github Pages
+```bash
+git subtree push --prefix dist/spa origin gh-pages
+```
+
 ### Customize the configuration
 See [Configuring quasar.conf.js](https://quasar.dev/quasar-cli/quasar-conf-js).
 
